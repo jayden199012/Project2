@@ -1,0 +1,162 @@
+#load data 
+library(ggplot2)
+library(lattice)
+library(caret)
+library(Rmosek)
+library(e1071)
+library(corrplot)
+
+check_skewness = function(x){
+  n=ncol(x)
+  skewness=apply(x[-n], 2,skewness)
+  return(skewness)
+}
+
+features = function (x){
+  x[,c(50:60,281)]
+}
+
+data=read.csv("blogData_train.csv", header =  FALSE)
+
+data.presplit=features(data)
+rows=nrow(data)
+
+#get 5000 rows
+set.seed(123)
+index = createDataPartition(data.presplit$V281,
+                            p =(5000/rows),
+                            groups = 2,
+                            list =FALSE,
+                            times = 1)
+index
+
+train=data.presplit[index,]
+str(train)
+
+n=ncol(train) #number of features
+#visualize skewness
+graphics.off()
+par(mfrow =c(3,4))
+j=n-1
+
+for (i in (1:j)){
+  plot(train[,i],train[,n],main=paste('feature',toString(i)))
+}
+
+
+#lm model
+lm =lm(formula = train$V281~.,data = train)
+summary(lm)
+#skewness value before trainsformation 
+check_skewness(train)
+n=ncol(train) 
+#transformation fix (skewness, -mean, /stdv)
+trans =preProcess(train[,-n],method=c('YeoJohnson','center','scale'))
+train = predict(trans,train)
+#skewness value after trainsformation 
+check_skewness(train)
+#visualize skewness after transformation
+graphics.off()
+par(mfrow =c(3,4))
+n=ncol(train) 
+j=n-1
+for (i in (1:j)){
+  plot(train[,i],train[,n],main=paste('feature',toString(i)))
+}
+#correlation
+correlations=cor(train)
+graphics.off()
+corrplot(correlations,order='hclust')
+high_correlations = findCorrelation(correlations,cutoff=0.75)
+high_correlations
+
+#remove features
+n=ncol(train) #number of features
+lm =lm(formula = train$V281~.,data = train)
+summary(lm)
+train = train[,-c(1,high_correlations)]
+lm =lm(formula = train$V281~.,data = train)
+summary(lm)
+lmw=as.matrix(lm$coefficients[-1])
+lmw
+feature_names=colnames(train)
+feature_names
+
+
+#Rmosek
+require(Rmosek)
+n=ncol(train) #number of features
+n
+
+##define paranmeters
+Model<- list()
+Model$sense = "min"
+X=as.matrix(train[,c(1:(n-1))])
+y=as.matrix(train[,n])
+Model$A=Matrix(X,sparse = TRUE)
+Model$c = as.numeric(solve(t(X)%*%X) %*% (t(X)%*%y))
+blc=  rep(0,5000)
+max=max(y)
+buc = rep(max, 5000)
+Model$bc = rbind(blc,buc)
+blx = apply(X,2,min)
+bux = apply(X,2,max)
+Model$bx = rbind(blx,bux)
+result = mosek(Model)
+w=as.matrix(result$sol$bas$xx)
+
+#Train result
+model_RSS_train= sum((as.matrix(train$V281)-(X %*% w))**2)
+model_RSS_train
+adhoc_RSS_train = sum((as.matrix(train$V281)-(X %*% lmw))**2)
+adhoc_RSS_train
+
+
+#test data1
+test = read.csv('blogData_test-2012.02.01.00_00.csv',header = FALSE)
+test=features(test)
+test
+test = predict(trans,test)
+test = test[,feature_names]
+testX = as.matrix(test[,c(1:8)])
+colnames(train)
+testX
+feature_names
+model_RSS= sum((as.matrix(test$V281)-(testX %*% w))**2)
+model_RSS
+adhoc_RSS = sum((as.matrix(test$V281)-(testX %*% lmw))**2)
+adhoc_RSS
+
+
+#test data2
+test2 = read.csv('blogData_test-2012.03.18.00_00.csv',header = FALSE)
+test2=features(test2)
+test2
+test2 = predict(trans,test2)
+test2 = test2[,feature_names]
+testX2 = as.matrix(test2[,c(1:8)])
+model_RSS2= sum((as.matrix(test2$V281)-(testX2 %*% w))**2)
+model_RSS2
+adhoc_RSS2 = sum((as.matrix(test2$V281)-(testX2 %*% lmw))**2)
+adhoc_RSS2
+t(w)
+
+#test data3
+test3 = read.csv('blogData_test-2012.02.29.00_00.csv',header = FALSE)
+test3=features(test3)
+test3
+test3 = predict(trans,test3)
+test3 = test3[,feature_names]
+testX3 = as.matrix(test3[,c(1:8)])
+testX2
+model_RSS3= sum((as.matrix(test3$V281)-(testX3 %*% w))**2)
+model_RSS3
+adhoc_RSS3 = sum((as.matrix(test3$V281)-(testX3 %*% lmw))**2)
+adhoc_RSS3
+
+#Result
+result = matrix(c(model_RSS_train,model_RSS,model_RSS2,model_RSS3,adhoc_RSS,adhoc_RSS,adhoc_RSS2,adhoc_RSS3),ncol = 4,nrow =2, byrow = TRUE)
+colnames(result) = c('Train','Test1','Test2','Test3')
+rownames(result) = c('Rmosek','Adhoc')
+result
+
